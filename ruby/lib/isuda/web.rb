@@ -1,4 +1,5 @@
 require 'digest/sha1'
+require 'digest/md5'
 require 'json'
 require 'net/http'
 require 'uri'
@@ -12,6 +13,8 @@ require 'tilt/erubis'
 
 module Isuda
   class Web < ::Sinatra::Base
+    # require 'rack-lineprof'
+    # use Rack::Lineprof, profile: 'web.rb'
     enable :protection
     enable :sessions
 
@@ -77,6 +80,31 @@ module Isuda
         db.last_id
       end
 
+      def get_keywords()
+        @keywords ||= {}
+        if @keywords.empty?
+          db.xquery(%| select keyword, keyword_hash from entry order by character_length(keyword) desc |).map do |k|
+            # k[:keyword] = Regexp.escape(k[:keyword])
+            # k
+            @keywords[k[:keyword]] = k[:keyword_hash]
+          end
+        end
+        @keywords
+      end
+
+      def get_htmlify_pattern()
+        @htmlify_pattern ||= get_keywords().map { |k, v| Regexp.escape(k) }.join('|')
+      end
+
+      def clear_keywords_cache()
+        @keywords = nil
+        @htmlify_pattern = nil
+      end
+
+      def keywords_updated_time()
+        @keywords_updated ||= Time.now
+      end
+
       def encode_with_salt(password: , salt: )
         Digest::SHA1.hexdigest(salt + password)
       end
@@ -90,12 +118,12 @@ module Isuda
       end
 
       def htmlify(content)
-        keywords = db.xquery(%| select * from entry order by character_length(keyword) desc |)
-        pattern = keywords.map {|k| Regexp.escape(k[:keyword]) }.join('|')
+        keywords = get_keywords
+        pattern = get_htmlify_pattern
         kw2hash = {}
         hashed_content = content.gsub(/(#{pattern})/) {|m|
           matched_keyword = $1
-          "isuda_#{Digest::SHA1.hexdigest(matched_keyword)}".tap do |hash|
+          "isuda_#{keywords[matched_keyword]}".tap do |hash|
             kw2hash[matched_keyword] = hash
           end
         }
@@ -106,6 +134,10 @@ module Isuda
           escaped_content.gsub!(hash, anchor)
         end
         escaped_content.gsub(/\n/, "<br />\n")
+      end
+
+      def keyword_escape(keyword)
+        Regexp.escape(keyword)
       end
 
       def uri_escape(str)
@@ -128,6 +160,8 @@ module Isuda
 
     get '/initialize' do
       db.xquery(%| DELETE FROM entry WHERE id > 7101 |)
+      get_keywords
+      get_htmlify_pattern
       isutar_initialize_url = URI(settings.isutar_origin)
       isutar_initialize_url.path = '/initialize'
       Net::HTTP.get_response(isutar_initialize_url)
@@ -215,13 +249,16 @@ module Isuda
       description = params[:description]
       halt(400) if is_spam_content(description) || is_spam_content(keyword)
 
-      bound = [@user_id, keyword, description] * 2
-      db.xquery(%|
-        INSERT INTO entry (author_id, keyword, description, created_at, updated_at)
-        VALUES (?, ?, ?, NOW(), NOW())
+      bound = [@user_id, keyword, description, keyword] * 2
+      result = db.xquery(%|
+        INSERT INTO entry (author_id, keyword, description, created_at, updated_at, keyword_hash)
+        VALUES (?, ?, ?, NOW(), NOW(), SHA1(?))
         ON DUPLICATE KEY UPDATE
-        author_id = ?, keyword = ?, description = ?, updated_at = NOW()
+        author_id = ?, keyword = ?, description = ?, updated_at = NOW(), keyword_hash = SHA1(?)
       |, *bound)
+      if result == 1
+        clear_keywords_cache 
+      end
 
       redirect_found '/'
     end
@@ -248,6 +285,7 @@ module Isuda
       end
 
       db.xquery(%| DELETE FROM entry WHERE keyword = ? |, keyword)
+      get_keywords.delete(keyword_escape(keyword))
 
       redirect_found '/'
     end
