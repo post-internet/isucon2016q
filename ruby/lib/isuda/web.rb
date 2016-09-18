@@ -265,7 +265,7 @@ module Isuda
     end
 
     def init_stars()
-      db.xquery('TRUNCATE star')
+      db_isutar.xquery('TRUNCATE star')
     end
 
     def get_stars(keyword)
