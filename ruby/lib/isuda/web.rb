@@ -11,6 +11,8 @@ require 'rack/utils'
 require 'sinatra/base'
 require 'tilt/erubis'
 
+require 'dalli'
+
 module Isuda
   class Web < ::Sinatra::Base
     # require 'rack-lineprof'
@@ -40,13 +42,8 @@ module Isuda
 
     set(:set_name) do |value|
       condition {
-        user_id = session[:user_id]
-        if user_id
-          user = db_isuda.xquery(%| select name from user where id = ? |, user_id).first
-          @user_id = user_id
-          @user_name = user[:name]
-          halt(403) unless @user_name
-        end
+        @user_id = session[:user_id]
+        @user_name = session[:user_name]
       }
     end
 
@@ -91,6 +88,14 @@ module Isuda
           end
       end
 
+      def cache 
+        Thread.current[:dalli] ||=
+          begin
+            dc = Dalli::Client.new('localhost:11211', { namespace: "isuda", compress: true})
+            dc
+          end
+      end
+
       def register(name, pw)
         chars = [*'A'..'~']
         salt = 1.upto(20).map { chars.sample }.join('')
@@ -114,6 +119,12 @@ module Isuda
         @keywords
       end
 
+      def get_user_name(user_id)
+        user_name = db_isuda.xquery(%| select name from user where id = ? |, user_id).first[:name]
+        halt(403) unless user_name
+        user_name
+      end
+
       def get_htmlify_pattern()
         @htmlify_pattern ||= get_keywords().map { |k, v| Regexp.escape(k) }.join('|')
       end
@@ -121,10 +132,16 @@ module Isuda
       def clear_keywords_cache()
         @keywords = nil
         @htmlify_pattern = nil
+        @keywords_updated = nil
+        cache.flush
       end
 
       def keywords_updated_time()
         @keywords_updated ||= Time.now
+      end
+
+      def cache_page()
+      
       end
 
       def encode_with_salt(password: , salt: )
@@ -139,7 +156,10 @@ module Isuda
         ! validation['valid']
       end
 
-      def htmlify(content)
+      def htmlify(id, content)
+        c = cache.get(id)
+        return c if c
+        
         keywords = get_keywords
         pattern = get_htmlify_pattern
         kw2hash = {}
@@ -156,6 +176,8 @@ module Isuda
           escaped_content.gsub!(hash, anchor)
         end
         escaped_content.gsub(/\n/, "<br />\n")
+        cache.set(id, escaped_content)
+        escaped_content
       end
 
       def keyword_escape(keyword)
@@ -172,10 +194,20 @@ module Isuda
     end
 
     get '/initialize' do
-      db_isuda.xquery(%| DELETE FROM entry WHERE id > 7101 |)
+      db_isuda.xquery(%| DELETE FROM entry WHERE id > 7101|)
+      clear_keywords_cache
       get_keywords
       get_htmlify_pattern
       init_stars
+
+      entries = db_isuda.xquery(%|
+        SELECT * FROM entry
+        ORDER BY updated_at DESC
+        LIMIT 30
+      |)
+      entries.each do |entry|
+        entry[:html] = htmlify(entry[:id], entry[:description])
+      end
 
       content_type :json
       JSON.generate(result: 'ok')
@@ -192,7 +224,7 @@ module Isuda
         OFFSET #{per_page * (page - 1)}
       |)
       entries.each do |entry|
-        entry[:html] = htmlify(entry[:description])
+        entry[:html] = htmlify(entry[:id], entry[:description])
         entry[:stars] = get_stars(entry[:keyword])
       end
 
@@ -227,6 +259,7 @@ module Isuda
 
       user_id = register(name, pw)
       session[:user_id] = user_id
+      session[:user_name] = get_user_name(user_id)
 
       redirect_found '/'
     end
@@ -245,12 +278,14 @@ module Isuda
       halt(403) unless user[:password] == encode_with_salt(password: params[:password], salt: user[:salt])
 
       session[:user_id] = user[:id]
+      session[:user_name] = get_user_name(user[:id])
 
       redirect_found '/'
     end
 
     get '/logout' do
       session[:user_id] = nil
+      session[:user_name] = nil
       redirect_found '/'
     end
 
@@ -279,7 +314,7 @@ module Isuda
 
       entry = db_isuda.xquery(%| select * from entry where keyword = ? |, keyword).first or halt(404)
       entry[:stars] = get_stars(entry[:keyword])
-      entry[:html] = htmlify(entry[:description])
+      entry[:html] = htmlify(entry[:id], entry[:description])
 
       locals = {
         entry: entry,
