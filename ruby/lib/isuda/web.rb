@@ -274,11 +274,6 @@ module Isuda
     end
 
     def post_stars(keyword)
-      isuda_keyword_url = URI(settings.isuda_origin)
-      isuda_keyword_url.path = '/keyword/%s' % [Rack::Utils.escape_path(keyword)]
-      res = Net::HTTP.get_response(isuda_keyword_url)
-      halt(404) unless Net::HTTPSuccess === res
-
       user_name = params[:user]
       db_isutar.xquery(%|
         INSERT INTO star (keyword, user_name, created_at)
@@ -287,14 +282,16 @@ module Isuda
     end
 
     get '/stars' do
-      keyword = params[:keyword] || ''
-      stars = get_stars(keyword)
+      stars = get_stars(params[:keyword] || '')
       content_type :json
       JSON.generate(stars: stars)
     end
 
     post '/stars' do
       keyword = params[:keyword]
+      unless db_isuda.xquery(%| SELECT * FROM entry WHERE keyword = ? |, keyword).first
+        halt(404)
+      end
       post_stars(keyword)
       content_type :json
       JSON.generate(result: 'ok')
