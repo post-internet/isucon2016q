@@ -203,7 +203,7 @@ module Isuda
       entries = db_isuda.xquery(%|
         SELECT * FROM entry
         ORDER BY updated_at DESC
-        LIMIT 30
+        LIMIT 10
       |)
       entries.each do |entry|
         entry[:html] = htmlify(entry[:id], entry[:description])
