@@ -306,12 +306,10 @@ module Isuda
     end
 
     def get_stars(keyword)
-      stars = db_isutar.xquery(%| select * from star where keyword = ? |, keyword).to_a
-      stars
+      db_isutar.xquery(%| select * from star where keyword = ? |, keyword).to_a
     end
 
-    def post_stars(keyword)
-      user_name = params[:user]
+    def post_stars(keyword, user)
       db_isutar.xquery(%|
         INSERT INTO star (keyword, user_name, created_at)
         VALUES (?, ?, NOW())
@@ -329,7 +327,7 @@ module Isuda
       unless db_isuda.xquery(%| SELECT * FROM entry WHERE keyword = ? |, keyword).first
         halt(404)
       end
-      post_stars(keyword)
+      post_stars(keyword, param[:user])
       content_type :json
       JSON.generate(result: 'ok')
     end
