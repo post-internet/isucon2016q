@@ -173,7 +173,6 @@ module Isuda
 
     get '/initialize' do
       db_isuda.xquery(%| DELETE FROM entry WHERE id > 7101 |)
-      db.xquery(%| DELETE FROM entry WHERE id > 7101 |)
       get_keywords
       get_htmlify_pattern
       init_stars
