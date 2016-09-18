@@ -14,10 +14,13 @@ module Isutar
 
     enable :protection
 
-    set :db_user, ENV['ISUTAR_DB_USER'] || 'root'
-    set :db_password, ENV['ISUTAR_DB_PASSWORD'] || ''
-    set :dsn, ENV['ISUTAR_DSN'] || 'dbi:mysql:db=isutar'
-    set :isuda_origin, ENV['ISUDA_ORIGIN'] || 'http://localhost:5000'
+    set :db_user_isuda, ENV['ISUDA_DB_USER'] || 'root'
+    set :db_password_isuda, ENV['ISUDA_DB_PASSWORD'] || ''
+    set :dsn_isuda, ENV['ISUDA_DSN'] || 'dbi:mysql:db=isuda'
+
+    set :db_user_isutar, ENV['ISUTAR_DB_USER'] || 'root'
+    set :db_password_isutar, ENV['ISUTAR_DB_PASSWORD'] || ''
+    set :dsn_isutar, ENV['ISUTAR_DSN'] || 'dbi:mysql:db=isutar'
 
     configure :development do
       require 'sinatra/reloader'
@@ -26,14 +29,31 @@ module Isutar
     end
 
     helpers do
-      def db
-        Thread.current[:db] ||=
+      def db_isuda
+        Thread.current[:db_isuda] ||=
           begin
-            _, _, attrs_part = settings.dsn.split(':', 3)
+            _, _, attrs_part = settings.dsn_isuda.split(':', 3)
             attrs = Hash[attrs_part.split(';').map {|part| part.split('=', 2) }]
             mysql = Mysql2::Client.new(
-              username: settings.db_user,
-              password: settings.db_password,
+              username: settings.db_user_isuda,
+              password: settings.db_password_isuda,
+              database: attrs['db'],
+              encoding: 'utf8mb4',
+              init_command: %|SET SESSION sql_mode='TRADITIONAL,NO_AUTO_VALUE_ON_ZERO,ONLY_FULL_GROUP_BY'|,
+            )
+            mysql.query_options.update(symbolize_keys: true)
+            mysql
+          end
+      end
+
+      def db_isutar
+        Thread.current[:db_isutar] ||=
+          begin
+            _, _, attrs_part = settings.dsn_isutar.split(':', 3)
+            attrs = Hash[attrs_part.split(';').map {|part| part.split('=', 2) }]
+            mysql = Mysql2::Client.new(
+              username: settings.db_user_isutar,
+              password: settings.db_password_isutar,
               database: attrs['db'],
               encoding: 'utf8mb4',
               init_command: %|SET SESSION sql_mode='TRADITIONAL,NO_AUTO_VALUE_ON_ZERO,ONLY_FULL_GROUP_BY'|,
@@ -44,16 +64,9 @@ module Isutar
       end
     end
 
-    get '/initialize' do
-      db.xquery('TRUNCATE star')
-
-      content_type :json
-      JSON.generate(result: 'ok')
-    end
-
     get '/stars' do
       keyword = params[:keyword] || ''
-      stars = db.xquery(%| select * from star where keyword = ? |, keyword).to_a
+      stars = db_isutar.xquery(%| select * from star where keyword = ? |, keyword).to_a
 
       content_type :json
       JSON.generate(stars: stars)
@@ -62,13 +75,12 @@ module Isutar
     post '/stars' do
       keyword = params[:keyword]
 
-      isuda_keyword_url = URI(settings.isuda_origin)
-      isuda_keyword_url.path = '/keyword/%s' % [Rack::Utils.escape_path(keyword)]
-      res = Net::HTTP.get_response(isuda_keyword_url)
-      halt(404) unless Net::HTTPSuccess === res
+      unless db_isuda.xquery(%| SELECT * FROM entry WHERE keyword = ? |, keyword).first
+        halt(404)
+      end
 
       user_name = params[:user]
-      db.xquery(%|
+      db_isutar.xquery(%|
         INSERT INTO star (keyword, user_name, created_at)
         VALUES (?, ?, NOW())
       |, keyword, user_name)
