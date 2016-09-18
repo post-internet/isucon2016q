@@ -11,6 +11,8 @@ require 'rack/utils'
 require 'sinatra/base'
 require 'tilt/erubis'
 
+require 'dalli'
+
 module Isuda
   class Web < ::Sinatra::Base
     # require 'rack-lineprof'
@@ -86,6 +88,14 @@ module Isuda
           end
       end
 
+      def cache 
+        Thread.current[:dalli] ||=
+          begin
+            dc = Dalli::Client.new('localhost:11211', { namespace: "isuda", compress: true})
+            dc
+          end
+      end
+
       def register(name, pw)
         chars = [*'A'..'~']
         salt = 1.upto(20).map { chars.sample }.join('')
@@ -110,7 +120,7 @@ module Isuda
       end
 
       def get_user_name(user_id)
-        user_name = db.xquery(%| select name from user where id = ? |, user_id).first[:name]
+        user_name = db_isuda.xquery(%| select name from user where id = ? |, user_id).first[:name]
         halt(403) unless user_name
         user_name
       end
@@ -122,10 +132,16 @@ module Isuda
       def clear_keywords_cache()
         @keywords = nil
         @htmlify_pattern = nil
+        @keywords_updated = nil
+        cache.flush
       end
 
       def keywords_updated_time()
         @keywords_updated ||= Time.now
+      end
+
+      def cache_page()
+      
       end
 
       def encode_with_salt(password: , salt: )
@@ -140,7 +156,10 @@ module Isuda
         ! validation['valid']
       end
 
-      def htmlify(content)
+      def htmlify(id, content)
+        c = cache.get(id)
+        return c if c
+        
         keywords = get_keywords
         pattern = get_htmlify_pattern
         kw2hash = {}
@@ -157,6 +176,8 @@ module Isuda
           escaped_content.gsub!(hash, anchor)
         end
         escaped_content.gsub(/\n/, "<br />\n")
+        cache.set(id, escaped_content)
+        escaped_content
       end
 
       def keyword_escape(keyword)
@@ -173,10 +194,20 @@ module Isuda
     end
 
     get '/initialize' do
-      db_isuda.xquery(%| DELETE FROM entry WHERE id > 7101 |)
+      db_isuda.xquery(%| DELETE FROM entry WHERE id > 7101|)
+      clear_keywords_cache
       get_keywords
       get_htmlify_pattern
       init_stars
+
+      entries = db_isuda.xquery(%|
+        SELECT * FROM entry
+        ORDER BY updated_at DESC
+        LIMIT 30
+      |)
+      entries.each do |entry|
+        entry[:html] = htmlify(entry[:id], entry[:description])
+      end
 
       content_type :json
       JSON.generate(result: 'ok')
@@ -193,7 +224,7 @@ module Isuda
         OFFSET #{per_page * (page - 1)}
       |)
       entries.each do |entry|
-        entry[:html] = htmlify(entry[:description])
+        entry[:html] = htmlify(entry[:id], entry[:description])
         entry[:stars] = get_stars(entry[:keyword])
       end
 
@@ -283,7 +314,7 @@ module Isuda
 
       entry = db_isuda.xquery(%| select * from entry where keyword = ? |, keyword).first or halt(404)
       entry[:stars] = get_stars(entry[:keyword])
-      entry[:html] = htmlify(entry[:description])
+      entry[:html] = htmlify(entry[:id], entry[:description])
 
       locals = {
         entry: entry,
