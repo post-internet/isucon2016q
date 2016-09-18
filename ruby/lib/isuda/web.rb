@@ -135,15 +135,6 @@ module Isuda
         Rack::Utils.escape_path(str)
       end
 
-      def load_stars(keyword)
-        isutar_url = URI(settings.isutar_origin)
-        isutar_url.path = '/stars'
-        isutar_url.query = URI.encode_www_form(keyword: keyword)
-        body = Net::HTTP.get(isutar_url)
-        stars_res = JSON.parse(body)
-        stars_res['stars']
-      end
-
       def redirect_found(path)
         redirect(path, 302)
       end
@@ -169,7 +160,7 @@ module Isuda
       |)
       entries.each do |entry|
         entry[:html] = htmlify(entry[:description])
-        entry[:stars] = load_stars(entry[:keyword])
+        entry[:stars] = get_stars(entry[:keyword])
       end
 
       total_entries = db_isuda.xquery(%| SELECT count(*) AS total_entries FROM entry |).first[:total_entries].to_i
@@ -251,7 +242,7 @@ module Isuda
       keyword = params[:keyword] or halt(400)
 
       entry = db_isuda.xquery(%| select * from entry where keyword = ? |, keyword).first or halt(404)
-      entry[:stars] = load_stars(entry[:keyword])
+      entry[:stars] = get_stars(entry[:keyword])
       entry[:html] = htmlify(entry[:description])
 
       locals = {
