@@ -9,6 +9,9 @@ require 'sinatra/base'
 
 module Isutar
   class Web < ::Sinatra::Base
+    # require 'rack-lineprof'
+    # use Rack::Lineprof, profile: 'web.rb'
+
     enable :protection
 
     set :db_user, ENV['ISUTAR_DB_USER'] || 'root'
